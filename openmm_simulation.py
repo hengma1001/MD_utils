@@ -169,11 +169,13 @@ def openmm_simulate_amber_npt(pdb_file, top_file,
 
 
 
-def openmm_simulate_relaxation(pdb_file, top_file, 
-        check_point=None, GPU_index=0,
+def openmm_simulate_relaxation_exp(pdb_file, top_file, 
+        check_point=None, GPU_index=0, 
         output_traj="output.dcd", output_log="output.log", output_cm=None,
         temperature=300, 
-        report_time=10*u.picoseconds, sim_time=10*u.nanoseconds):
+        relaxation=False, 
+        report_time=10*u.picoseconds, 
+        sim_time=10*u.nanoseconds):
     """
     Start and run an OpenMM NVT simulation with Langevin integrator at 2 fs 
     time step and 300 K. The cutoff distance for nonbonded interactions were 
@@ -229,12 +231,9 @@ def openmm_simulate_relaxation(pdb_file, top_file,
 
     simulation.minimizeEnergy()
 
-    for i in range(100):
-        integrator.setTemperature(3*i*u.kelvin)
-        simulation.step(1000)
-
     report_freq = int(report_time/dt)
-    simulation.context.setVelocitiesToTemperature(10*u.kelvin, random.randint(1, 10000))
+    # simulation.context.setVelocitiesToTemperature(10*u.kelvin, random.randint(1, 10000))
+
     simulation.reporters.append(app.DCDReporter(output_traj, report_freq))
     if output_cm:
         simulation.reporters.append(ContactMapReporter(output_cm, report_freq))
@@ -245,5 +244,113 @@ def openmm_simulate_relaxation(pdb_file, top_file,
 
     if check_point:
         simulation.loadCheckpoint(check_point)
-    nsteps = int(sim_time/dt)
-    simulation.step(nsteps)
+    
+    if relaxation: 
+        n_steps = int(sim_time/dt/100) 
+        n_stages = 100
+        temp_incre = int(temperature // n_stages) 
+        for i in range(n_stages):
+            run_temp = temp_incre*(i+1)*u.kelvin
+            print "Running simulation at %d K..." % run_temp
+            integrator.setTemperature(run_temp)
+            simulation.step(n_steps)
+    else: 
+        n_steps = int(sim_time/dt)
+        simulation.step(n_steps)
+
+
+def openmm_simulate_relaxation_imp(pdb_file, top_file=None, check_point=None, GPU_index=0,
+        temperature=300, 
+        output_traj="output.dcd", output_log="output.log", output_cm=None,
+        relaxation=False, 
+        report_time=10*u.picoseconds, sim_time=10*u.nanoseconds):
+    """
+    Start and run an OpenMM NVT simulation with Langevin integrator at 2 fs 
+    time step and 300 K. The cutoff distance for nonbonded interactions were 
+    set at 1.2 nm and LJ switch distance at 1.0 nm, which commonly used with
+    Charmm force field. Long-range nonbonded interactions were handled with PME.  
+
+    Parameters
+    ----------
+    pdb_file : coordinates file (.gro, .pdb, ...)
+        This is the molecule configuration file contains all the atom position
+        and PBC (periodic boundary condition) box in the system. 
+   
+    check_point : None or check point file to load 
+        
+    GPU_index : Int or Str 
+        The device # of GPU to use for running the simulation. Use Strings, '0,1'
+        for example, to use more than 1 GPU
+  
+    output_traj : the trajectory file (.dcd)
+        This is the file stores all the coordinates information of the MD 
+        simulation results. 
+  
+    output_log : the log file (.log) 
+        This file stores the MD simulation status, such as steps, time, potential
+        energy, temperature, speed, etc.
+ 
+    output_cm : the h5 file contains contact map information
+
+    report_time : 10 ps
+        The program writes its information to the output every 10 ps by default 
+
+    sim_time : 10 ns
+        The timespan of the simulation trajectory
+    """
+
+    if top_file: 
+        pdb = pmd.load_file(top_file, xyz = pdb_file)
+        system = pdb.createSystem(nonbondedMethod=app.CutoffNonPeriodic, 
+                nonbondedCutoff=1.0*u.nanometer, constraints=app.HBonds, 
+                implicitSolvent=app.OBC1)
+    else: 
+        pdb = pmd.load_file(pdb_file)
+        forcefield = app.ForceField('amber99sbildn.xml', 'amber99_obc.xml')
+        system = forcefield.createSystem(pdb.topology, nonbondedMethod=app.CutoffNonPeriodic, 
+                nonbondedCutoff=1.0*u.nanometer, constraints=app.HBonds)
+
+    dt = 0.002*u.picoseconds
+    integrator = omm.LangevinIntegrator(temperature*u.kelvin, 91.0/u.picosecond, dt)
+    integrator.setConstraintTolerance(0.00001)
+
+    try:
+        platform = omm.Platform_getPlatformByName("CUDA")
+        properties = {'DeviceIndex': str(GPU_index), 'CudaPrecision': 'mixed'}
+    except Exception:
+        platform = omm.Platform_getPlatformByName("OpenCL")
+        properties = {'DeviceIndex': str(GPU_index)}
+
+    simulation = app.Simulation(pdb.topology, system, integrator, platform, properties)
+
+    simulation.context.setPositions(random.choice(pdb.get_coordinates())/10) #parmed \AA to OpenMM nm
+
+    # equilibrate
+    simulation.minimizeEnergy() 
+#     simulation.context.setVelocitiesToTemperature(30*u.kelvin, random.randint(1, 10000))
+#     simulation.step(int(100*u.picoseconds / (2*u.femtoseconds)))
+
+    report_freq = int(report_time/dt)
+    simulation.reporters.append(app.DCDReporter(output_traj, report_freq))
+    if output_cm:
+        simulation.reporters.append(ContactMapReporter(output_cm, report_freq))
+    simulation.reporters.append(app.StateDataReporter(output_log,
+            report_freq, step=True, time=True, speed=True,
+            potentialEnergy=True, temperature=True, totalEnergy=True))
+    simulation.reporters.append(app.CheckpointReporter('checkpnt.chk', report_freq))
+
+    if check_point:
+        simulation.loadCheckpoint(check_point)
+
+    if relaxation: 
+        n_steps = int(sim_time/dt/100) 
+        n_stages = 100
+        temp_incre = int(temperature // n_stages) 
+        for i in range(n_stages):
+            run_temp = temp_incre*(i+1)*u.kelvin
+            print "Running simulation at %d K..." % run_temp
+            integrator.setTemperature(run_temp)
+            simulation.step(n_steps)
+    else: 
+        n_steps = int(sim_time/dt)
+        simulation.step(n_steps)
