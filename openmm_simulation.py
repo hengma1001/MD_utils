@@ -250,9 +250,9 @@ def openmm_simulate_relaxation_exp(pdb_file, top_file,
         n_stages = 100
         temp_incre = int(temperature // n_stages) 
         for i in range(n_stages):
-            run_temp = temp_incre*(i+1)*u.kelvin
+            run_temp = temp_incre*(i+1)
             print "Running simulation at %d K..." % run_temp
-            integrator.setTemperature(run_temp)
+            integrator.setTemperature(run_temp*u.kelvin)
             simulation.step(n_steps)
     else: 
         n_steps = int(sim_time/dt)
@@ -347,9 +347,9 @@ def openmm_simulate_relaxation_imp(pdb_file, top_file=None, check_point=None, GP
         n_stages = 100
         temp_incre = int(temperature // n_stages) 
         for i in range(n_stages):
-            run_temp = temp_incre*(i+1)*u.kelvin
+            run_temp = temp_incre*(i+1)
             print "Running simulation at %d K..." % run_temp
-            integrator.setTemperature(run_temp)
+            integrator.setTemperature(run_temp*u.kelvin)
             simulation.step(n_steps)
     else: 
         n_steps = int(sim_time/dt)
